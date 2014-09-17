@@ -1,0 +1,20 @@
+LATEX = platex
+DVIPDFM = dvipdfmx
+DOC = example
+PARADOC = gosh -I../lib ../bin/paradoc
+PARADOCFLAGS =
+
+LaTeXDocument($(DOC), $(DOC))
+
+%.tex: %.scrbl
+	$(PARADOC) $(PARADOCFLAGS) -o $@ $<
+
+%.html: %.scrbl
+	$(PARADOC) $(PARADOCFLAGS) -o $@ $<
+
+.DEFAULT: $(DOC).pdf $(DOC).dvi $(DOC).html
+
+.PHONY: clean
+
+clean:
+	rm -f *.aux *.dvi *.html *log *.out *.pdf *.tex *.toc

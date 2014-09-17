@@ -1,0 +1,693 @@
+;;;; -*- mode: gauche -*-
+;;;
+;;; Copyright (c) 2014 OOHASHI Daichi,
+;;; All rights reserved.
+;;;
+;;; Redistribution and use in source and binary forms, with or without
+;;; modification, are permitted provided that the following conditions
+;;; are met:
+;;;
+;;; 1. Redistributions of source code must retain the above copyright
+;;;    notice, this list of conditions and the following disclaimer.
+;;;
+;;; 2. Redistributions in binary form must reproduce the above copyright
+;;;    notice, this list of conditions and the following disclaimer in the
+;;;    documentation and/or other materials provided with the distribution.
+;;;
+;;; 3. Neither the name of the authors nor the names of its contributors
+;;;    may be used to endorse or promote products derived from this
+;;;    software without specific prior written permission.
+;;;
+;;; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+;;; "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+;;; LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+;;; A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+;;; OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+;;; SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+;;; TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+;;; PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+;;; LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+;;; NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+;;; SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;;;
+
+(use srfi-1)
+(use srfi-11)
+(use srfi-13)
+(use gauche.parseopt)
+(use gauche.parameter)
+(use file.util)
+(use util.match)
+(use text.html-lite)
+(use text.tree)
+
+(use text.latex-lite)
+(use zipper)
+(use scribble)
+(use paradoc.runtime)
+
+(define-method write-tree ((tree <promise>) out)
+  (write-tree (force tree) out))
+
+(define command-name
+  (sys-basename (car (command-line))))
+
+(define (usage status out)
+  (display #`"\
+usage: ,|command-name| [-l<file> ...] <input.scrbl>
+options:
+  -l<file>   load <file> before processing <input.scrbl>.
+             <file> is an ordinary Gauche program.
+             You can define scribble macros there
+             Actually, you can do anything there.
+             You can print messages, play musics, abort programs, and ....
+  -o <file>
+  --output=<file>
+             write output to <file>.
+             The extension of the <file> determines the output format.
+             Output formats currently supported are HTML (for .html and .htm),
+             and LaTeX (for .tex).
+  -h, --help print this message and exit.
+")
+  (exit status))
+
+(define (paradoc-error msg . args)
+  (format (current-error-port) "~A: " command-name)
+  (apply format (current-error-port) msg args)
+  (exit 1))
+
+(define (main args)
+  (let-args (cdr args)
+      ((output "o|output=s")
+       (#f "h|help" => (cut usage 0 (current-output-port)))
+       (#f "l=s" => (lambda (filename)
+                      (load filename
+                            :paths (list (current-directory))
+                            :environment (make-module #f))))
+       (else
+        => (lambda (opt rest cont)
+             (format (current-error-port)
+                     "~A: illegal option: ~A~%" command-name opt)
+             (usage 1 (current-error-port))))
+       . rest)
+    (when (null? rest)
+      (format (current-error-port) "~A: no input are supplied.~%" command-name)
+      (usage 1 (current-error-port)))
+    (when (not (null? (cdr rest)))
+      (format (current-error-port) "~A: superfluous input files: ~A~%"
+              command-name
+              (string-join rest " "))
+      (usage 1 (current-error-port)))
+    (let*-values (((input) (car rest))
+                  ((dir _ __) (decompose-path input))
+                  ((output ext) (if output
+                                    (values output
+                                            (path-extension output))
+                                    (values #f "html")))
+                  ((mod) (cond ((member ext '("html" "htm"))
+                                scribble:html-module)
+                               ((member ext '("tex"))
+                                scribble:latex-module)
+                               (else
+                                (paradoc-error "unsupported output type: ~A~%"
+                                               ext)))))
+      (define (doit in out)
+        (parameterize ((paradoc-current-env (base-env)))
+          (scribble:with-module mod
+            (write-tree ((scribble-module-template mod)
+                         (scribble-eval-file in))
+                        out))))
+      (if output
+          (call-with-output-file output
+            (lambda (out)
+              (doit input out)))
+          (doit input (current-output-port))))
+    0))
+
+(define (base-env)
+  (alist->hash-table
+   '((document-title . "")
+     (document-author . "")
+     (document-date . "")
+     (rev-sections . ()))
+   'eq?))
+
+;;; utils
+(define (map* f xs . yss)
+  (define (next ys)
+    (if (null? (cdr ys))
+        ys
+        (cdr ys)))
+  (cond ((null? yss)
+         (map f xs))
+        ((any null? yss)
+         (error "arguments but the first should not be null" yss))
+        (else
+         (let loop ((xs xs)
+                    (yss yss)
+                    (rs '()))
+           (if (null? xs)
+               (reverse! rs)
+               (loop (cdr xs)
+                     (map next yss)
+                     (xcons rs (apply f (car xs) (map car yss)))))))))
+
+(define (string-blank? x)
+  (and (string? x)
+       (string-every char-whitespace? x)))
+
+;;;
+(dolist (mod (list scribble:latex-module scribble:html-module))
+  (scribble:with-module mod
+    (define-scribble-macro (include file)
+      (let* ((path (build-path (paradoc-cwd) file))
+             (dir (values-ref (decompose-path path) 0)))
+        (parameterize ((paradoc-cwd dir))
+          (map scribble-eval (file->sexp-list path)))))
+    (define-scribble-macro (include-section file)
+      (scribble-eval-file file))
+    ))
+
+;;; latex
+(scribble-module-set-template!
+ scribble:latex-module
+ (lambda bodies
+   (list
+    (latex:documentclass "jsarticle" "dvipdfmx")
+    (latex:usepackage "amsmath")
+    (latex:usepackage "float")
+    (latex:usepackage "fontenc" "T1")
+    (latex:usepackage "inputenc" "utf8")
+    (latex:usepackage "graphicx" "hiresbb")
+    (latex:usepackage "listings")
+    (latex:usepackage "array")
+    (latex:usepackage "booktabs")
+    (latex:usepackage "longtable")
+    (latex:usepackage "hyperref")
+    (latex:usepackage "pxjahyper")
+    "\\lstset{basicstyle={\\ttfamily\\small},frame=single}\n"
+    (delay (latex:title
+            (ref (paradoc-current-env) 'document-title)))
+    (delay (latex:author
+            (ref (paradoc-current-env) 'document-author)))
+    (delay (latex:date
+            (ref (paradoc-current-env) 'document-date)))
+    (latex:document
+     (latex:maketitle)
+     bodies))))
+
+(define (latex-escape* x :optional (escape-space #f))
+  (cond ((string? x)
+         (latex-escape-string x :escape-space escape-space))
+        (else
+         x)))
+
+(define-syntax define-latex-section-macros
+  (syntax-rules ()
+    ((_ (sect lsec) ...)
+     (begin
+       (define-scribble-macro (sect (tag: tag #f) . args)
+         (list
+          (lsec (map latex-escape* args))
+          (latex-tag tag)))
+       ...))))
+
+(define (map-items f items)
+  (filter-map (lambda (x)
+                (match x
+                  (('item . args)
+                   (apply f args))
+                  (_
+                   (error "syntax error. not @item" x))))
+              items))
+
+(define (latex-tag tag)
+  (if tag
+      (latex:hyperdef "" tag (latex:label tag))
+      '()))
+
+(scribble:with-module scribble:latex-module
+  (define-scribble-macro (title . args)
+    (begin0
+      '()
+      (set! (ref (paradoc-current-env) 'document-title)
+            (map latex-escape* args))))
+
+  (define-scribble-macro (author . args)
+    (begin0
+      '()
+      (set! (ref (paradoc-current-env) 'document-author)
+            (map latex-escape* args))))
+
+  (define-scribble-macro (date . args)
+    (begin0
+      '()
+      (set! (ref (paradoc-current-env) 'document-date)
+            (map latex-escape* args))))
+
+  (define-latex-section-macros
+    (section latex:section)
+    (subsection latex:subsection)
+    (subsubsection latex:subsubsection))
+
+  (define-scribble-macro (para . args)
+    (latex:par (map latex-escape* args)))
+
+  (define-inline-scribble-macro (emph . args)
+    (latex:textit (map latex-escape* args)))
+
+  (define-inline-scribble-macro (strong . args)
+    (latex:textbf (map latex-escape* args)))
+
+  (define-inline-scribble-macro (code . args)
+    (latex:texttt (map latex-escape* args)))
+
+  (define-inline-scribble-macro (var . args)
+    (latex:$ "\\mathit{" (map latex-escape* args) "}"))
+
+  (define-scribble-macro (code-block (language: lang #f) . args)
+    (latex:lstlisting (map (lambda (x)
+                             (if (string? x)
+                                 (latex-escape-string x
+                                                      :escape-newline #f)
+                                 x))
+                           args)
+                      :language lang))
+
+  (define-scribble-macro (include-code-block (language: lang #f) filename)
+    (latex:lstinputlisting filename
+                           :language lang))
+
+  (define-inline-scribble-macro (superscript . args)
+    (latex:$ "^{\\text{" (map latex-escape* args) "}}"))
+
+  (define-inline-scribble-macro (subscript . args)
+    (latex:$ "_{\\text{" (map latex-escape* args) "}}"))
+
+  (define-inline-scribble-macro (math . args)
+    (latex:$ args))
+
+  (define-scribble-macro (math-block . args)
+    (list args))
+
+  (define-scribble-macro (itemlist (style: style #f) . items)
+    (let ((env (if (eq? style 'ordered)
+                   latex:enumerate
+                   latex:itemize)))
+      (env (map-items (lambda (x)
+                        (latex:item (latex-escape* x)))
+                      items))))
+
+  (define-scribble-macro (desclist . items)
+    (latex:description
+     (map-items (lambda (x . args)
+                  (latex:item* (latex-escape* x)
+                               (map latex-escape* args)))
+                items)))
+
+  (define-inline-scribble-macro (elemtag tag . args)
+    (latex:hypertarget tag (map latex-escape* args)))
+
+  (define-inline-scribble-macro (elemref tag . args)
+    (latex:hyperlink tag (map latex-escape* args)))
+
+  (define-inline-scribble-macro (hyperlink url . args)
+    (latex:href url (map latex-escape* args)))
+
+  (define-inline-scribble-macro (url . args)
+    (latex:url (map latex-escape* args)))
+
+  (define-inline-scribble-macro (secref tag)
+    (latex:nameref tag))
+
+  (define-inline-scribble-macro (image path)
+    (latex:includegraphics path))
+
+  (define-scribble-macro (figure (caption: caption)
+                                 (tag: tag #f)
+                                 . imgs)
+    (latex:figure "H"
+      (latex:centering)
+      imgs
+      (latex:caption #f (latex-escape* caption))
+      (latex-tag tag)))
+
+  (define-scribble-macro (table (caption: caption)
+                                (tag: tag #f)
+                                (align: align '(left))
+                                (halign: halign '(center))
+                                . rest)
+    (define (align->latex-align x)
+      (case x
+        ((left) "l")
+        ((right) "r")
+        ((center) "c")))
+    (define table-row-sep (list " \\\\" #\newline))
+    (define (table-row cells)
+      (list (intersperse " & " cells)
+            table-row-sep))
+    (define (f header body)
+      (latex:center
+       (latex:longtable (map* (lambda (x al)
+                                (align->latex-align al))
+                              (or header (car body))
+                              align)
+         (latex:caption #f (latex-escape* caption))
+         (latex-tag tag)
+         table-row-sep
+         (latex:toprule)
+         #\newline
+         (cond-list
+          (header
+           (list
+            (table-row
+             (map* (lambda (h hal al)
+                     (if (eqv? hal al)
+                         (latex-escape* h)
+                         (latex:multicolumn 1
+                                            (align->latex-align hal)
+                                            (latex-escape* h))))
+                   header
+                   halign
+                   align))
+            (latex:midrule)
+            (latex:endhead)
+            #\newline)))
+         (map (lambda (rs)
+                (table-row (map latex-escape* rs)))
+              body)
+         (latex:bottomrule)
+         #\newline)))
+    (match rest
+      ((body)
+       (f #f body))
+      ((header body)
+       (f header body))
+      (()
+       (error "no rows supplied"))
+      (_
+       (error "malformed table" rest))))
+  )
+
+;;; html
+(define (html-classes . args)
+  (string-join args " "))
+
+(define html-math-class
+  (html-classes
+   ;; for MathJax
+   "tex2jax_process"
+   "paradoc-math"))
+
+(define html-code-block-class
+  (html-classes
+   ;; for Google Code Prettify
+   "prettyprint"
+   "paradoc-code-block"))
+
+(scribble-module-set-template!
+ scribble:html-module
+ (lambda bodies
+   (let ((title (delay (html-escape-string
+                        (ref (paradoc-current-env) 'document-title)))))
+     (list
+      "<?xml version='1.0' encoding='utf-8'?>"
+      (html-doctype :type :xhtml-1.1)
+      (html:html
+       :xmlns "http://www.w3.org/1999/xhtml"
+       (html:head
+        (delay (html:title
+                (ref (paradoc-current-env) 'document-title)))
+        (delay (html:meta
+                :name "author"
+                :content (tree->string (ref (paradoc-current-env) 'document-author))))
+        (delay (html:meta
+                :name "date"
+                :content (tree->string (ref (paradoc-current-env) 'document-date))))
+        (html:script
+         :type "text/javascript"
+         :src "http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML")
+        (html:script
+         :type "text/javascript"
+         :src "https://google-code-prettify.googlecode.com/svn/loader/run_prettify.js")
+        (html:script
+         :type "text/javascript"
+         :src "./paradoc.js")
+        (html:link
+         :rel "stylesheet"
+         :type "text/css"
+         :href "./paradoc.css")
+        )
+       (html:body
+        :class "tex2jax_ignore"
+        (delay
+          (html:h1 (ref (paradoc-current-env) 'document-title)))
+        bodies))))))
+
+(define (html-escape* x)
+  (if (string? x)
+      (html-escape-string x)
+      x))
+
+(define (make-section-info tag level contents)
+  (list tag level contents))
+
+(define (section-tag s)
+  (car s))
+
+(define (section-level s)
+  (cadr s))
+
+(define (section-contents s)
+  (caddr s))
+
+(define (html-table-of-contents)
+  (define (make-toc secs)
+    (define $ol (gensym "ol"))
+    (define $li (gensym "li"))
+    (define (ol . args)
+      (cons $ol args))
+    (define (li . args)
+      (cons $li args))
+    (define (contents s)
+      (html:a :href (format "#~A" (section-tag s))
+              (section-contents s)))
+    (define (fixup x)
+      (if (not (pair? x))
+          x
+          (cond ((eq? (car x) $ol)
+                 (apply html:ol (map fixup (cdr x))))
+                ((eq? (car x) $li)
+                 (apply html:li (map fixup (cdr x))))
+                (else
+                 (map fixup x)))))
+    (let loop ((secs secs)
+               (level (apply min +inf.0 (map section-level secs)))
+               (zipper (zipper-last-child (sexp->zipper (ol :id "toc")))))
+      (if (null? secs)
+          (fixup (zipper->sexp zipper))
+          (let* ((sec (car secs))
+                 (lv (section-level sec)))
+            (cond
+             ((< lv level)
+              (loop secs
+                    (- level 1)
+                    (zipper-parent
+                     (zipper-parent zipper))))
+             ((> lv level)
+              (loop secs
+                    (+ level 1)
+                    (zipper-last-child
+                     (zipper-insert-right* (zipper-last-child zipper)
+                                           (ol)))))
+             ((= lv level)
+              (loop (cdr secs)
+                    level
+                    (zipper-insert-right* zipper
+                                          (li (contents sec))))))))))
+  (make-toc (reverse (ref (paradoc-current-env) 'rev-sections))))
+
+(scribble:with-module scribble:html-module
+  (define-scribble-macro (title . args)
+    (begin0
+      '()
+      (set! (ref (paradoc-current-env) 'document-title)
+            args)))
+
+  (define-scribble-macro (author . args)
+    (begin0
+      '()
+      (set! (ref (paradoc-current-env) 'document-author)
+            args)))
+
+  (define-scribble-macro (date . args)
+    (begin0
+      '()
+      (set! (ref (paradoc-current-env) 'document-date)
+            args)))
+
+  (let ()
+    (define (html-section h level tag args)
+      (let ((c (map html-escape* args))
+            (tag (or tag (gensym))))
+        (push! (ref (paradoc-current-env) 'rev-sections)
+               (make-section-info tag level c))
+        (h :id tag c)))
+    (define-scribble-macro (section (tag: tag #f) . args)
+      (html-section html:h2 2 tag args))
+    (define-scribble-macro (subsection (tag: tag #f) . args)
+      (html-section html:h3 3 tag args))
+    (define-scribble-macro (subsubsection (tag: tag #f) . args)
+      (html-section html:h4 4 tag args)))
+
+  (define-scribble-macro (para . args)
+    (html:p (map html-escape* args)))
+
+  (define-inline-scribble-macro (emph . args)
+    (html:em (map html-escape* args)))
+
+  (define-inline-scribble-macro (strong . args)
+    (html:strong (map html-escape* args)))
+
+  (define-inline-scribble-macro (code . args)
+    (html:code (map html-escape* args)))
+
+  (let ()
+    (define (code-block lang body)
+      (html:pre :class html-code-block-class
+                (html:code :class (and lang (format "lang-~A" lang))
+                           body)))
+    (define-scribble-macro (code-block (language: lang #f) . args)
+      (code-block lang (map html-escape* args)))
+
+    (define-scribble-macro (include-code-block (language: lang #f) filename)
+      (code-block lang
+                  (html-escape-string
+                   (call-with-input-file (paradoc-resolve-path filename)
+                     port->string))))
+    )
+
+  (define-inline-scribble-macro (superscript . args)
+    (html:sup (map html-escape* args)))
+
+  (define-inline-scribble-macro (subscript . args)
+    (html:sub (map html-escape* args)))
+
+  (define-inline-scribble-macro (var . args)
+    (html:var (map html-escape* args)))
+
+  (define-inline-scribble-macro (math . args)
+    (html:span :class html-math-class
+               "\\("
+               (map html-escape* args)
+               "\\)"))
+
+  (define-scribble-macro (math-block . args)
+    (html:div :class html-math-class
+              "\\["
+              (map html-escape* args)
+              "\\]"))
+
+  (define-scribble-macro (itemlist (style: style #f) . items)
+    (let ((env (if (eq? style 'ordered)
+                   html:ol
+                   html:ul)))
+      (env (map-items (lambda args
+                        (html:li (map html-escape* args)))
+                      items))))
+
+  (define-scribble-macro (desclist . items)
+    (html:dl
+     (map-items (lambda (x . args)
+                  (list
+                   (html:dt (html-escape* x))
+                   (html:dd (map html-escape* args))))
+                items)))
+
+  (define-inline-scribble-macro (elemtag tag . args)
+    (html:span :id tag (map html-escape* args)))
+
+  (define-inline-scribble-macro (elemref tag . args)
+    (html:a
+     :href (format "#~A" tag)
+     (map html-escape* args)))
+
+  (define-inline-scribble-macro (hyperlink url . args)
+    (html:a :href url
+            (map html-escape* args)))
+
+  (define-inline-scribble-macro (url u)
+    (html:a :href u
+            (html-escape* u)))
+
+  (define-inline-scribble-macro (secref tag)
+    (delay
+      (html:a
+       :href (format "#~A" tag)
+       (cond ((assoc tag (ref (paradoc-current-env) 'rev-sections))
+              => section-contents)
+             (else
+              (html:strong
+               :class "paradoc-error"
+               (format "~A" tag)))))))
+
+  (define-inline-scribble-macro (image path)
+    (html:img :alt "" :src path))
+
+  (define-scribble-macro (figure (caption: caption)
+                                 (tag: tag #f)
+                                 . imgs)
+    (html:div :class "figure"
+              :id tag
+              (html:p imgs)
+              (html:p :class "caption" (html-escape* caption))))
+
+  (define-scribble-macro (table (caption: caption)
+                                (tag: tag #f)
+                                (align: align '(left))
+                                (halign: halign '(center))
+                                . rest)
+    (define (align->html-align x)
+      (case x
+        ((left) "left")
+        ((right) "right")
+        ((center) "center")
+        (else #f)))
+    (define (f header body)
+      (html:table
+       :id tag
+       :frame "hsides"
+       :rules "groups"
+       (html:caption (html-escape* caption))
+       (html:colgroup
+        (map* (lambda (_ al)
+                (html:col :align (align->html-align al)))
+              (or header (car body))
+              align))
+       (cond-list
+        (header
+         (html:thead
+          (html:tr
+           (map* (lambda (h hal al)
+                   (html:th :align (align->html-align hal)
+                            (html-escape* h)))
+                 header
+                 halign
+                 align)))))
+       (html:tbody
+        (map (lambda (row)
+               (html:tr
+                (map* (lambda (c)
+                        (html:td (html-escape* c)))
+                      row)))
+             body))))
+    (match rest
+      ((body)
+       (f #f body))
+      ((header body)
+       (f header body))
+      (()
+       (error "no rows supplied"))
+      (_
+       (error "malformed table" rest))))
+  )

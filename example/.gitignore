@@ -1,0 +1,13 @@
+*.omc
+.omakedb
+.omakedb.lock
+*.html
+*.tex
+*.aux
+*.dvi
+*.log
+*.out
+*.pdf
+*.tex
+*.toc
+*.xbb
