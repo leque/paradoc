@@ -1,8 +1,12 @@
 LATEX = platex
 DVIPDFM = dvipdfmx
 DOC = example
-PARADOC = gosh -I../lib ../bin/paradoc
+PARADOC = paradoc
 PARADOCFLAGS =
+
+if $(defined DEBUG)
+  PARADOC = gosh -I../lib ../bin/paradoc
+  export
 
 LaTeXDocument($(DOC), $(DOC))
 
