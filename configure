@@ -43,7 +43,19 @@
 (cf-subst 'GAUCHE_PKGARCHDIR (gauche-config "--pkgarchdir"))
 
 ;; Output
-(cf-make-gpd)
+
+;; Gauche-0.9.4 does not have cf-make-gpd.
+;; See: http://blog.practical-scheme.net/gauche/20140720a-configure
+;;(cf-make-gpd)
+(use gauche.package)
+(let1 gpd-file #"~(cf$ 'PACKAGE_NAME).gpd"
+  (with-output-to-file gpd-file
+    (cut write-gauche-package-description
+      (make <gauche-package-description>
+        :name (cf$ 'PACKAGE_NAME)
+        :version (cf$ 'PACKAGE_VERSION)
+        :configure (string-join (command-line))))))
+
 (cf-echo (cf$ 'PACKAGE_VERSION) > "VERSION")
 (cf-output "Makefile")
 
