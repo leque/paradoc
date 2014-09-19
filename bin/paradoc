@@ -36,6 +36,7 @@
 (use srfi-13)
 (use gauche.parseopt)
 (use gauche.parameter)
+(use gauche.vm.debugger :only (debug-source-info))
 (use file.util)
 (use util.match)
 (use text.html-lite)
@@ -136,7 +137,17 @@ options:
               ((scribble-parse-error? exc)
                (paradoc-error/loc (scribble-parse-error-port-name exc)
                                   (scribble-parse-error-line exc)
-                                  (condition-message* exc ""))))
+                                  (condition-message* exc "")))
+              ((scribble-syntax-error? exc)
+               (let*-values (((info) (debug-source-info
+                                      (scribble-syntax-error-form exc)))
+                             ((src line) (if (and (pair? info)
+                                                  (pair? (cdr info)))
+                                             (values (car info) (cadr info))
+                                             (values #f #f))))
+                 (paradoc-error/loc src
+                                    line
+                                    (condition-message* exc "")))))
         (if output
             (call-with-output-file output
               (lambda (out)

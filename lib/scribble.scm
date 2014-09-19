@@ -42,6 +42,10 @@
           scribble-parse-error-line
           scribble-parse-error
 
+          &scribble-syntax-error scribble-syntax-error?
+          scribble-syntax-error-form
+          scribble-syntax-error
+
           define-scribble-macro
           define-inline-scribble-macro
           scribble:with-module
@@ -64,6 +68,15 @@
 
 (select-module scribble)
 
+(define-syntax import-define
+  (syntax-rules ()
+    ((_ mod name ...)
+     (begin
+       (define name (with-module mod name))
+       ...))))
+
+(import-define gauche.internal pair-attribute-set! extended-cons)
+
 (define-condition-type &scribble-parse-error &error
   scribble-parse-error?
   (port-name scribble-parse-error-port-name)
@@ -76,6 +89,27 @@
           (&scribble-parse-error
            (port-name (port-name port))
            (line line)))))
+
+(define-condition-type &scribble-syntax-error &error
+  scribble-syntax-error?
+  (form scribble-syntax-error-form))
+
+(define (scribble-syntax-error form fmt . args)
+  (raise (condition
+          (&message
+           (message (apply format fmt args)))
+          (&scribble-syntax-error
+           (form form)))))
+
+(define (attach-debug-source-info port line x)
+  (cond ((not (pair? x))
+         x)
+        (else
+         (rlet1 pair (extended-cons (car x)
+                                    (cdr x))
+           (pair-attribute-set! pair
+                                'source-info
+                                (list (port-name port) line))))))
 
 (include "scribble/internal/scribble.scm")
 
@@ -141,12 +175,24 @@
 (define (scribble-eval scrbl)
   (cond ((and (pair? scrbl)
               (symbol? (car scrbl)))
-         (cond ((scribble-macro (car scrbl))
-                => (lambda (proc)
-                     (scribble-eval
-                      (apply proc (cdr scrbl)))))
-               (else
-                (error "unknown macro: " (car scrbl)))))
+         (cond
+          ((scribble-macro (car scrbl))
+           => (lambda (proc)
+                (let ((exp (guard (exc
+                                   (else
+                                    (scribble-syntax-error
+                                     scrbl
+                                     "error while expanding macro: ~A: ~A"
+                                     (car scrbl)
+                                     (if (condition-has-type? exc &message)
+                                         (condition-ref exc 'message)
+                                         ""))))
+                             (apply proc (cdr scrbl)))))
+                  (scribble-eval exp))))
+          (else
+           (scribble-syntax-error scrbl
+                                  "undefined macro: ~A"
+                                  (car scrbl)))))
         ((pair? scrbl)
          (map scribble-eval scrbl))
         (else scrbl)))

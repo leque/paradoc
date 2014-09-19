@@ -112,7 +112,8 @@
                                         line
                                         "unterminated list: ~A"
                                         x))
-                 ((eq? x scribble-close) (reverse res))
+                 ((eq? x scribble-close)
+                  (attach-debug-source-info in line (reverse res)))
                  ((eq? x scribble-dot)
                   (let ((y (scrib-read in)))
                     (if (or (eof-object? y) (eq? y scribble-close))
@@ -126,13 +127,22 @@
                                line
                                "dot in non-terminal position in list: ~A ~A"
                                y z)
-                              (append (reverse res) y))))))
+                              (attach-debug-source-info
+                               in
+                               line
+                               (append (reverse res) y)))))))
                  (else (lp (cons x res)))))))
       ((#\} #\] #\)) scribble-close)
       ((#\.) (if (char-delimiter? (peek-char in)) scribble-dot (read-float-tail in 0.0)))
-      ((#\') (list 'quote (scrib-read in)))
-      ((#\`) (list 'quasiquote (scrib-read in)))
-      ((#\,) (list (if-peek-char #\@ in 'unquote-splicing 'unquote) (scrib-read in)))
+      ((#\')
+       (attach-debug-source-info in line (list 'quote (scrib-read in))))
+      ((#\`)
+       (attach-debug-source-info in line (list 'quasiquote (scrib-read in))))
+      ((#\,)
+       (attach-debug-source-info
+        in
+        line
+        (list (if-peek-char #\@ in 'unquote-splicing 'unquote) (scrib-read in))))
       ((#\;) (skip-line in) (scrib-read in))
       ((#\|) (string->symbol (read-escaped in #\|)))
       ((#\") (read-escaped in #\"))
@@ -200,6 +210,7 @@
 (define (scribble-parse-escape in ec)
   (define bracket-char #\[)
   (define brace-char #\{)
+  (define line (port-current-line in))
   (let* ((wrap (read-prefix-wrapper in))
          (c (peek-char in))
          (cmd (if (or (eqv? c bracket-char) (eqv? c brace-char)) '() (list (scribble-read in ec))))
@@ -208,7 +219,10 @@
          (punc (read-punctuation in))
          (body? (eqv? (peek-char in) brace-char))
          (body (cond (body? (read-char in) (scribble-parse in punc ec)) (else '()))))
-    (wrap (if (or data? body?) (append cmd data body) (car cmd)))))
+    (attach-debug-source-info
+     in
+     line
+     (wrap (if (or data? body?) (append cmd data body) (car cmd))))))
 
 (define (scribble-parse in . o)
   (define init-punc (if (pair? o) (car o) '()))
