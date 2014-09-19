@@ -76,6 +76,21 @@ options:
   (apply format (current-error-port) msg args)
   (exit 1))
 
+(define (paradoc-error/loc src line msg)
+  (let ((out (current-error-port)))
+    (format out "~A:" command-name)
+    (when src
+      (format out " ~A:" src)
+      (when (and (integer? line) (positive? line))
+        (format out "~A:" line)))
+    (format out " ~A~%" msg)
+    (exit 1)))
+
+(define (condition-message* exc fallback)
+  (if (condition-has-type? exc &message)
+      (condition-ref exc 'message)
+      fallback))
+
 (define (main args)
   (let-args (cdr args)
       ((output "o|output=s")
@@ -117,11 +132,16 @@ options:
             (write-tree ((scribble-module-template mod)
                          (scribble-eval-file in))
                         out))))
-      (if output
-          (call-with-output-file output
-            (lambda (out)
-              (doit input out)))
-          (doit input (current-output-port))))
+      (guard (exc
+              ((scribble-parse-error? exc)
+               (paradoc-error/loc (scribble-parse-error-port-name exc)
+                                  (scribble-parse-error-line exc)
+                                  (condition-message* exc ""))))
+        (if output
+            (call-with-output-file output
+              (lambda (out)
+                (doit input out)))
+            (doit input (current-output-port)))))
     0))
 
 (define (base-env)

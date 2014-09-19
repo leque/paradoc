@@ -36,6 +36,12 @@
           scribble-parse*
           scribble-parse-implicit-para
           scribble-eval
+
+          &scribble-parse-error scribble-parse-error?
+          scribble-parse-error-port-name
+          scribble-parse-error-line
+          scribble-parse-error
+
           define-scribble-macro
           define-inline-scribble-macro
           scribble:with-module
@@ -57,6 +63,19 @@
   )
 
 (select-module scribble)
+
+(define-condition-type &scribble-parse-error &error
+  scribble-parse-error?
+  (port-name scribble-parse-error-port-name)
+  (line scribble-parse-error-line))
+
+(define (scribble-parse-error port line fmt . args)
+  (raise (condition
+          (&message
+           (message (apply format fmt args)))
+          (&scribble-parse-error
+           (port-name (port-name port))
+           (line line)))))
 
 (include "scribble/internal/scribble.scm")
 

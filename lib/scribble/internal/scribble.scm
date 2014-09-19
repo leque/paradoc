@@ -56,7 +56,10 @@
     (let ((ch (read-char in)))
       (cond ((or (eof-object? ch) (char-delimiter? ch)) res)
             ((char-numeric? ch) (lp (+ res (* k (char-digit ch))) (* k 0.1)))
-            (else (error "invalid numeric syntax"))))))
+            (else (scribble-parse-error in
+                                        (port-current-line in)
+                                        "invalid numeric syntax: ~A~A"
+                                        res ch))))))
 
 (define (read-number in acc base)
   (let lp ((acc acc))
@@ -68,8 +71,14 @@
         (read-char in)
         (if (= base 10)
             (begin (read-char in) (read-float-tail in (exact->inexact acc)))
-            (error "non-base-10 floating point")))
-       (else (error "invalid numeric syntax"))))))
+            (scribble-parse-error in
+                                  (port-current-line in)
+                                  "non-base-10 floating point")))
+       (else (scribble-parse-error in
+                                   (port-current-line in)
+                                   "invalid numeric syntax: ~A~A"
+                                   (number->string acc base)
+                                   ch))))))
 
 (define (read-escaped in terminal)
   (let lp ((ls '()))
@@ -87,6 +96,7 @@
 (define (scrib-read in . o)
   (define ch (read-char in))
   (define ec (if (pair? o) (car o) default-ecape-char))
+  (define line (port-current-line in))
   (cond
    ((eof-object? ch) ch)
    ((char-whitespace? ch) (scrib-read in))
@@ -97,15 +107,25 @@
       ((#\( #\[ #\{)
        (let lp ((res '()))
          (let ((x (scrib-read in)))
-           (cond ((eof-object? x) (error "unterminated list" x))
+           (cond ((eof-object? x)
+                  (scribble-parse-error in
+                                        line
+                                        "unterminated list: ~A"
+                                        x))
                  ((eq? x scribble-close) (reverse res))
                  ((eq? x scribble-dot)
                   (let ((y (scrib-read in)))
                     (if (or (eof-object? y) (eq? y scribble-close))
-                        (error "unterminated dotted list")
+                        (scribble-parse-error in
+                                              line
+                                              "unterminated dotted list")
                         (let ((z (scrib-read in)))
                           (if (not (eq? z scribble-close))
-                              (error "dot in non-terminal position in list" y z)
+                              (scribble-parse-error
+                               in
+                               line
+                               "dot in non-terminal position in list: ~A ~A"
+                               y z)
                               (append (reverse res) y))))))
                  (else (lp (cons x res)))))))
       ((#\} #\] #\)) scribble-close)
@@ -132,7 +152,10 @@
                   ((space) #\space) ((newline) #\newline)
                   (else (string-ref (symbol->string name) 0))))
               (read-char in)))
-         (else (error "unknown # syntax"))))
+         (else (scribble-parse-error in
+                                     (port-current-line in)
+                                     "unknown # syntax: #~A"
+                                     (peek-char in)))))
       (else
        (if (char-numeric? ch)
            (read-number in (char-digit ch) 10)
@@ -140,8 +163,14 @@
 
 (define (scribble-read in . o)
   (let ((res (scrib-read in (if (pair? o) (car o) default-ecape-char))))
-    (cond ((eq? res scribble-dot) (error "invalid . in source"))
-          ((eq? res scribble-close) (error "too many )'s"))
+    (cond ((eq? res scribble-dot)
+           (scribble-parse-error in
+                                 (port-current-line in)
+                                 "invalid . in source"))
+          ((eq? res scribble-close)
+           (scribble-parse-error in
+                                 (port-current-line in)
+                                 "too many )'s"))
           (else res))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -202,7 +231,10 @@
         ((eof-object? c)
          (if (zero? depth)
              (reverse (collect str res))
-             (error "unterminated expression" punc)))
+             (scribble-parse-error in
+                                   (port-current-line in)
+                                   "unterminated expression: ~A"
+                                   punc)))
         ((and (eqv? c escape-char) (list-prefix? punc str))
          (let ((c (peek-char in)))
            (cond
