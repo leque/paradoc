@@ -418,6 +418,85 @@ options:
        (error "no rows supplied"))
       (_
        (error "malformed table" rest))))
+
+  (let ()
+    (define (bnf-tag s)
+      (format "paradoc-bnf:~A" s))
+    (define (sbnf->latex tree)
+      (define (e s)
+        (latex-escape* (x->string s)))
+      (define (bnf-meta . s)
+        (latex:textrm s))
+      (define (bnf:comment . s)
+        (bnf-meta (e "(*") s (e "*)")))
+      (define bnf:def
+        (list " " (latex:$ "::=") " "))
+      (define bnf:or
+        (list " " (latex:$ "|") " "))
+      (define bnf:ellipsis
+        (bnf-meta " ... "))
+      (define (bnf:group . s)
+        (bnf-meta "( " s " )"))
+      (define (bnf:opt . s)
+        (bnf-meta "[ " s " ]"))
+      (define (bnf:* . s)
+        (bnf-meta (e "{ ") s (e " }")))
+      (define (bnf:+ . s)
+        (bnf-meta (e "{ ") s (e " }") (latex:$ "^{+}")))
+      (define (bnf:terminal s)
+        (latex:textrm "`" (latex:texttt (e s)) "'"))
+      (define (shortstack s)
+        (list "\\shortstack[l]{" s "}"))
+      (let loop ((tree tree))
+        (match tree
+          (('::= name body . more)
+           (map (compose (cut list <> " \\\\\n")
+                         (cut intersperse "&" <>))
+                `((,(latex:hypertarget
+                     (bnf-tag name)
+                     (latex:textit (e name)))
+                   ,bnf:def
+                   ,(shortstack (loop body)))
+                  ,@(map (lambda (rule)
+                           `("" ,bnf:or ,(shortstack (loop rule))))
+                         more))))
+          (('comment str)
+           (bnf:comment str))
+          (('seq subtree ...)
+           (intersperse " " (map loop subtree)))
+          (('or subtree ...)
+           (intersperse bnf:or (map loop subtree)))
+          (('group subtree)
+           (bnf:group (loop subtree)))
+          (('opt subtree ...)
+           (bnf:opt (loop `(seq ,@subtree))))
+          (('* subtree ...)
+           (bnf:* (loop `(seq ,@subtree))))
+          (('+ subtree ...)
+           (bnf:+ (loop `(seq ,@subtree))))
+          (('/ beg end)
+           (list (loop beg) bnf:ellipsis (loop end)))
+          (([or 'non-term '$] name)
+           (latex:hyperref
+            (bnf-tag name)
+            (latex:textit (e name))))
+          (('_ var n)
+           (list (loop var)
+                 (latex:$ (format "_{~A}"
+                                  (if (number? n)
+                                      n
+                                      (format "\\mathit{~A}" (e n)))))))
+          (('% str)
+           (bnf-meta (e str)))
+          ('%% " \\\\ ")
+          ([? not-pair?]
+           (bnf:terminal (x->string tree))))))
+    (define-scribble-macro (bnf . tree)
+      (latex:longtable '("r" "r" "l")
+        (map sbnf->latex tree)))
+    (define-inline-scribble-macro (bnfref name)
+      (latex:hyperlink (bnf-tag name) name))
+    )
   )
 
 ;;; html
@@ -721,4 +800,91 @@ options:
        (error "no rows supplied"))
       (_
        (error "malformed table" rest))))
+
+  (let ()
+    (define (bnf-id s)
+      (format "paradoc-bnf--~A" s))
+    (define (sbnf->html tree)
+      (define (bnf-meta . s)
+        (html:span :class "paradoc-bnf-meta" s))
+      (define (bnf:comment . s)
+        (html:span :class "paradoc-bnf-comment"
+                   "(* " s " *)"))
+      (define bnf:or
+        (list " " (bnf-meta "|") " "))
+      (define (bnf:group . s)
+        (list (bnf-meta "(") " " s " " (bnf-meta ")")))
+      (define (bnf:opt . s)
+        (list (bnf-meta "\[") " " s " " (bnf-meta "\]")))
+      (define (bnf:* . s)
+        (list (bnf-meta "\{") " " s " " (bnf-meta "\}")))
+      (define (bnf:+ . s)
+        (list (bnf-meta "\{") " " s " " (bnf-meta "\}" (html:sup "+"))))
+      (define (bnf:terminal s)
+        (let ((quot (if (string-contains s "\"")
+                        "\'"
+                        "\"")))
+          (html:span :class "paradoc-bnf-terminal"
+                     (bnf-meta quot)
+                     (html-escape-string s)
+                     (bnf-meta quot))))
+      (let loop ((tree tree))
+        (match tree
+          (('::= name body . more)
+           (list
+            (html:tr
+             (html:td :class "paradoc-bnf-lhs"
+                      :rowspan (+ (length more) 1)
+                      (html:span :id (bnf-id name)
+                                 :class "paradoc-bnf-nonterminal"
+                                 (html-escape-string name)))
+             (html:td :class "paradoc-bnf-rel"
+                      (bnf-meta "::="))
+             (html:td :class "paradoc-bnf-rhs"
+                      (loop body)))
+            (map (lambda (rule)
+                   (html:tr
+                    (html:td :class "paradoc-bnf-rel"
+                             bnf:or)
+                    (html:td :class "paradoc-bnf-rhs"
+                             (loop rule))))
+                 more)))
+          (('comment str)
+           (bnf:comment str))
+          (('seq subtree ...)
+           (intersperse " " (map loop subtree)))
+          (('or subtree ...)
+           (intersperse bnf:or (map loop subtree)))
+          (('group subtree)
+           (bnf:group (loop subtree)))
+          (('opt subtree ...)
+           (bnf:opt (loop `(seq ,@subtree))))
+          (('* subtree ...)
+           (bnf:* (loop `(seq ,@subtree))))
+          (('+ subtree ...)
+           (bnf:+ (loop `(seq ,@subtree))))
+          (('/ beg end)
+           (list (loop beg) " " (bnf-meta "...") " " (loop end)))
+          (([or 'non-term '$] name)
+           (html:a :href (format "#~A" (bnf-id name))
+                   :class "paradoc-bnf-nonterminal"
+                   (html-escape-string name)))
+          (('_ var n)
+           (list (loop var)
+                 (html:sub (if (number? n)
+                               n
+                               (html:var (html-escape-string n))))))
+          (('% str)
+           (bnf-meta (html-escape-string str)))
+          ('%% (html:br))
+          ([? not-pair?]
+           (bnf:terminal (x->string tree))))))
+    (define-scribble-macro (bnf . tree)
+      (html:table :class "paradoc-bnf"
+                  (map sbnf->html tree)))
+    (define-inline-scribble-macro (bnfref name)
+      (html:a :href (format "#~A" (bnf-id name))
+              :class "paradoc-bnf-nonterminal"
+              (html-escape-string name)))
+    )
   )
