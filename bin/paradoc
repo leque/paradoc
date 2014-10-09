@@ -449,7 +449,7 @@ options:
         (list "\\shortstack[l]{" s "}"))
       (let loop ((tree tree))
         (match tree
-          (('::= name body . more)
+          (((or '::= '|::=|) name body . more)
            (map (compose (cut list <> " \\\\\n")
                          (cut intersperse "&" <>))
                 `((,(latex:hypertarget
@@ -830,7 +830,7 @@ options:
                      (bnf-meta quot))))
       (let loop ((tree tree))
         (match tree
-          (('::= name body . more)
+          (((or '::= '|::=|) name body . more)
            (list
             (html:tr
              (html:td :class "paradoc-bnf-lhs"
